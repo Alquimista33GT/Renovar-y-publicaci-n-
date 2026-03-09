@@ -14,27 +14,73 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     TimeoutException,
-    StaleElementReferenceException,
     ElementClickInterceptedException,
     WebDriverException,
 )
 
 # =========================
-# CONFIG
+# CONFIG LINUX / UBUNTU
 # =========================
-CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+CHROME_PATH = "/usr/bin/google-chrome"
 
-BASE_PERFILES = r"C:\Users\roman\OneDrive\Escritorio\Perfiles"
-PERFILES = [rf"{BASE_PERFILES}\Perfil {i}" for i in range(1, 41)]
+# Ruta base donde tienes los lotes
+BASE_LOTES = "/home/crazy"
+
+# Solo tomará carpetas tipo Facebook-1, Facebook-2, etc.
+LOTE_PREFIJO = "Facebook-"
 
 PUERTO_BASE = 9222
 DASHBOARD_URL = "https://www.facebook.com/marketplace/you/dashboard?locale=es_LA"
-
 WAIT_SEC = 25
 
 
 # =========================
-# UTILS
+# UTILS DE ESCANEO
+# =========================
+def natural_key(texto):
+    partes = re.split(r"(\d+)", texto)
+    return [int(p) if p.isdigit() else p.lower() for p in partes]
+
+
+def listar_lotes(base_lotes):
+    if not os.path.exists(base_lotes):
+        raise FileNotFoundError(f"No existe BASE_LOTES: {base_lotes}")
+
+    lotes = []
+    for nombre in os.listdir(base_lotes):
+        ruta = os.path.join(base_lotes, nombre)
+        if os.path.isdir(ruta) and nombre.startswith(LOTE_PREFIJO):
+            lotes.append(ruta)
+
+    lotes.sort(key=lambda x: natural_key(os.path.basename(x)))
+    return lotes
+
+
+def listar_perfiles_en_lote(ruta_lote):
+    perfiles = []
+    for nombre in os.listdir(ruta_lote):
+        ruta = os.path.join(ruta_lote, nombre)
+        if os.path.isdir(ruta):
+            perfiles.append(ruta)
+
+    perfiles.sort(key=lambda x: natural_key(os.path.basename(x)))
+    return perfiles
+
+
+def construir_lista_perfiles():
+    perfiles_finales = []
+    lotes = listar_lotes(BASE_LOTES)
+
+    for lote in lotes:
+        perfiles = listar_perfiles_en_lote(lote)
+        for perfil in perfiles:
+            perfiles_finales.append(perfil)
+
+    return perfiles_finales
+
+
+# =========================
+# UTILS GENERALES
 # =========================
 def puerto_listo(host="127.0.0.1", port=9222, timeout=20) -> bool:
     t0 = time.time()
@@ -82,10 +128,12 @@ def abrir_con_remote_debug(perfil: str, puerto: int):
     args = [
         CHROME_PATH,
         f"--remote-debugging-port={puerto}",
-        f'--user-data-dir={perfil}',
+        f"--user-data-dir={perfil}",
         "--start-maximized",
         "--disable-notifications",
         "--disable-popup-blocking",
+        "--no-first-run",
+        "--no-default-browser-check",
     ]
     return subprocess.Popen(args)
 
@@ -150,7 +198,7 @@ def extraer_numero(texto: str) -> int:
 
 
 # =========================
-# JS CLICK UNIVERSAL (RENOVAR + ELIMINAR/REPUB)
+# JS CLICK UNIVERSAL
 # =========================
 JS_MODAL_CLICK_BY_TEXTS = r"""
 (function(texts){
@@ -271,11 +319,8 @@ JS_MODAL_SCROLL = r"""
 })()
 """
 
+
 def js_click_texts(driver, texts):
-    """
-    Click dentro del modal por lista de textos (includes).
-    Siempre retorna dict.
-    """
     try:
         res = driver.execute_script("return (" + JS_MODAL_CLICK_BY_TEXTS + ")(arguments[0]);", texts)
     except Exception as e:
@@ -374,7 +419,6 @@ def renovar_todo_en_modal(driver, wait, max_rounds=80) -> int:
         if sin_click >= 10:
             break
 
-    # Cerrar modal con Listo si aparece
     try:
         listo = WebDriverWait(driver, 6).until(
             EC.element_to_be_clickable(
@@ -419,7 +463,7 @@ def proceso_para_renovar(driver, wait):
 
 
 # =========================
-# 2) ELIMINAR Y REPUBLICAR (FIX CON JS)
+# 2) ELIMINAR Y REPUBLICAR
 # =========================
 def leer_para_eliminar(driver, wait) -> int:
     tile = wait.until(
@@ -498,7 +542,6 @@ def click_eliminar_y_republicar_todos(driver, wait) -> bool:
     esperar_dialog(wait)
     time.sleep(0.8)
 
-    # 1) Botón principal (puede variar)
     targets_main = [
         "Eliminar y volver a publicar todos",
         "Eliminar y volver a publicar",
@@ -520,13 +563,11 @@ def click_eliminar_y_republicar_todos(driver, wait) -> bool:
 
     time.sleep(1.0)
 
-    # 2) Confirmación si aparece
     conf = js_click_texts(driver, ["Confirmar", "Aceptar", "Eliminar"])
     if conf.get("ok") and int(conf.get("clicked", 0) or 0) > 0:
         print(f"   [ELIMINAR] Confirmación clicked={conf.get('clicked')}")
         time.sleep(1.0)
 
-    # 3) Listo si aparece
     listo = js_click_texts(driver, ["Listo"])
     if listo.get("ok") and int(listo.get("clicked", 0) or 0) > 0:
         print("   [ELIMINAR] Click 'Listo'")
@@ -585,7 +626,18 @@ def main():
     if not os.path.exists(CHROME_PATH):
         raise FileNotFoundError(f"No existe CHROME_PATH: {CHROME_PATH}")
 
-    for idx, perfil in enumerate(PERFILES, start=1):
+    perfiles = construir_lista_perfiles()
+
+    if not perfiles:
+        raise RuntimeError(f"No se encontraron perfiles dentro de {BASE_LOTES}")
+
+    print("\n==============================")
+    print("PERFILES ENCONTRADOS:")
+    for i, p in enumerate(perfiles, start=1):
+        print(f"[{i}] {p}")
+    print("==============================\n")
+
+    for idx, perfil in enumerate(perfiles, start=1):
         if not os.path.exists(perfil):
             print("\n==============================")
             print(f"[PERFIL {idx}] ❌ Carpeta no existe → {perfil}")
@@ -596,9 +648,11 @@ def main():
 
         print("\n==============================")
         print(f"[PERFIL {idx}] Abriendo Chrome: {perfil}")
-        chrome_proc = abrir_con_remote_debug(perfil, puerto)
+        print(f"[PERFIL {idx}] Puerto asignado: {puerto}")
 
+        chrome_proc = abrir_con_remote_debug(perfil, puerto)
         driver = None
+
         try:
             print(f"[PERFIL {idx}] Esperando puerto {puerto}...")
             if not puerto_listo(port=puerto, timeout=25):
@@ -633,6 +687,7 @@ def main():
                     driver.quit()
             except Exception:
                 pass
+
             try:
                 kill_process_tree(chrome_proc.pid)
             except Exception:
